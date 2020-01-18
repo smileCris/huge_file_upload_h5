@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <!-- import CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/element-ui/lib/theme-chalk/index.css">
+  <style>
+    #app {
+      width: 600px;
+      padding: 50px;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <input type="file" @change="handleFileChange" />
+    <el-button @click="handleUpload">上传</el-button>
+    <p>总进度</p>
+    <el-progress :percentage="uploadPercentage"></el-progress>
+    <el-table :data="tableData">
+      <el-table-column prop="hash" label="切片hash"></el-table-column>
+      <el-table-column prop="size" label="大小(KB)"></el-table-column>
+      <el-table-column prop="percentage" label="进度">
+        <template slot-scope="scope">
+          <el-progress :percentage="scope.row.percentage"></el-progress>
+        </template>
+      </el-table-column>
+    </el-table>
+  </div>
+</body>
+  <!-- import Vue before Element -->
+  <script src="https://unpkg.com/vue/dist/vue.js"></script>
+  <!-- import JavaScript -->
+  <script src="https://unpkg.com/element-ui/lib/index.js"></script>
+  <script>
+    const LENGTH = 10 // 切片数量
+
+    new Vue({
+      el: '#app',
+      data: function() {
+        return {
+          container: {
+            file: null
+          },
+          chunkList: [],
+          tableData: []
+        }
+      },
+      computed: {
+        // 文件上传进度 = 每个切片已上传部分累加 / 整个文件大小
+        uploadPercentage() {
+          if (!this.container.file || !this.chunkList.length) return 0
+          const loaded = this.chunkList
+            .map(item => item.size * item.percentage)
+            .reduce((acc, cur) => acc + cur)
+          this.tableData = this.chunkList
+            .map(item => {
+              return { hash: item.hash, size: (item.size / 1000).toFixed(2), percentage: item.percentage }
+            })
+          return parseInt((loaded / this.container.file.size).toFixed(2))
+        }
+      },
+      methods: {
+        // 封装原生 XMLHttpRequest 请求
+        request({
+          url,
+          method = 'post',
+          data,
+          headers = {},
+          onProgress
+        }) {
+          return new Promise(resolve => {
+            const xhr = new XMLHttpRequest()
+            // 上传进度注册监听事件
+            xhr.upload.onprogress = onProgress
+            xhr.open(method, url)
+            Object.keys(headers).forEach(key => xhr.setRequestHeader(key, headers[key]))
+            xhr.send(data)
+            xhr.onload = e => {
+              resolve({
+                data: e.target.response
+              })
+            }
+          })
+        },
+        // 文件提交
+        handleFileChange(e) {
+          const [file] = e.target.files
+          if (!file) return
+          this.container.file = file
+        },
+        // 生成文件切片
+        createFileChunk(file, length = LENGTH) {
+          const fileChunkList = []
+          const chunkSize = Math.ceil(file.size / length)
+          let cur = 0
+          while(cur < file.size) {
+            fileChunkList.push({ file: file.slice(cur, cur + chunkSize) })
+            cur += chunkSize
+          }
+          return fileChunkList
+        },
+        // 上传切片，同时过滤已上传的切片
+        async uploadChunks() {
+          const requestList = this.chunkList
+            .map(({ chunk, hash, index }) => {
+              const formData = new FormData()
+              formData.append('chunk', chunk)
+              formData.append('hash', hash)
+              formData.append('filename', this.container.file.name)
+              return { formData, index }
+            })
+            .map(async ({ formData, index }) => 
+              this.request({
+                url: 'http://localhost:3000',
+                data: formData,
+                onProgress: this.createProgressHandler(this.chunkList[index])
+              })
+            )
+          await Promise.all(requestList)  // 并发切片
+          // 合并切片
+          await this.mergeRequest()
+        },
+        // 合并切片
+        async mergeRequest() {
+          await this.request({
+            url: 'http://localhost:3000/merge',
+            headers: {
+              'content-type': 'application/json'
+            },
+            data: JSON.stringify({
+              filename: this.container.file.name
+            })
+          })
+        },
+        async handleUpload() {
+          if (!this.container.file) return
+          const fileChunkList = this.createFileChunk(this.container.file)
+          this.chunkList = fileChunkList.map(({ file }, index) => ({
+            chunk: file,
+            index,
+            size: this.container.file.size / LENGTH,
+            hash: this.container.file.name + '-' + index,  // 文件名 + 数组小标
+            percentage: 0
+          }))
+          await this.uploadChunks()
+        },
+        createProgressHandler(item) {
+          return e => {
+            item.percentage = parseInt(String((e.loaded / e.total) * 100))
+          }
+        }
+      }
+    })
+  </script>
+</html>

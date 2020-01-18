@@ -1,0 +1,6 @@
+{
+  "devDependencies": {
+    "fs-extra": "^8.1.0",
+    "multiparty": "^4.2.1"
+  }
+}
